@@ -1,0 +1,484 @@
+---
+title: "PCORI_SCD_data_cleaning_050526"
+output: html_document
+name: "Lizi Shao"
+date: "2026-05-05"
+---
+
+ETL and cleaning of PCORI SCD data; we have all sites for ED & IC including Boston and Indiana.
+
+# Clearing environment, loading raw data from REDCap
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("H:/PCORI SCD data")
+ls(); rm(list = ls())
+require(gtsummary)
+require(readr)
+require(writexl)
+require(readxl)
+require(flextable)
+require(officer)
+require(magrittr)
+require(tidyverse)
+require(purrr)
+
+df_ed <- read.csv("H:/PCORI SCD data/SCDInfusionCenterImp-EDData_DATA_2026-05-05_1628.csv")
+df_ic <- read.csv("H:/PCORI SCD data/SCDInfusionCenterImp-ICData_DATA_2026-05-05_1629.csv")
+
+if (length(excel_sheets("H:/PCORI SCD data/VCU_ED_rawdata.xlsx")) != 1) {
+  multiple_sheets <- lapply(excel_sheets("H:/PCORI SCD data/VCU_ED_rawdata.xlsx"), 
+                            \(s) read_excel("H:/PCORI SCD data/VCU_ED_rawdata.xlsx", sheet = s))
+  names(multiple_sheets)
+} else {
+  df_ed_vcu <- read_excel("H:/PCORI SCD data/VCU_ED_rawdata.xlsx")
+  print("one sheet only")
+}
+
+df_ic_vcu <- read.csv("H:/PCORI SCD data/vcu_ic 1.csv")
+
+df_ic %>% names()
+df_ic_vcu %>% names()
+df_ed %>% names()
+df_ed_vcu %>% names()
+head(df_ed_vcu)
+
+
+dfs <- list(df_ic = df_ic,
+            df_ic_vcu = df_ic_vcu,
+            df_ed = df_ed,
+            df_ed_vcu = df_ed_vcu)
+
+dfs <- lapply(dfs, as.data.frame)
+list2env(dfs, envir = .GlobalEnv)
+rm(dfs); gc()
+
+class(df_ic); class(df_ic_vcu)
+class(df_ed); class(df_ed_vcu)
+
+str(list(df_ic,
+         df_ic_vcu,
+         df_ed,
+         df_ed_vcu))
+
+names(df_ed_vcu) <- as.character(df_ed_vcu[1,])
+df_ed_vcu <- df_ed_vcu[-1,] %>% as.data.frame() #Run this once ONLY
+df_ed_vcu$patient_id <- df_ed_vcu$ID; df_ed_vcu <- df_ed_vcu %>% select(-ID)
+df_ed_vcu <- df_ed_vcu %>% relocate(patient_id, .before = 1)
+head(df_ed_vcu)
+```
+
+# Label mapping
+```{r}
+label_to_code <- c(
+  # ---------------- ED ----------------
+  "Site ID"                                           = "ed_q02",
+  "ED Location"                                       = "ed_q2_2",
+  "Arrival Date (check-in time)"                      = "ed_q03",
+  "Arrival Time"                                      = "ed_q04",
+  "Arrival Date/Time CalcText"                        = "ed_q04_calctext",
+  "Arrival Date/Time (check-in time)"                 = "ed_q04_dt",
+  "First Medication Administration Date"               = "ed_q05_date",
+  "First Medication Administration Time"              = "ed_q05",
+  "First Medication CalcText"                         = "ed_q05_calctext",
+  "First Medication Administration Date/Time"         = "ed_q05_dt",
+  "Reasons for delay"                                 = "rea",
+  "Last Medication Administration Time"               = "ed_q06",
+  "Last Medication Administration Date/Time"          = "ed_q06_dt",
+  "First Pain Score"                                  = "ed_q07",
+  "Last Pain Score"                                   = "ed_q08",
+  "Discharge Date"                                    = "ed_q16",
+  "Discharge Time"                                    = "ed_q09",
+  "Discharge Calctext"                                = "ed_q09_calctext",
+  "Discharge Date/Time"                               = "ed_q09_dt",
+  "Disposition End of Appointment"                    = "ed_q10",
+  "If Disposition Other, Please Specify"              = "ed_q10_1",
+  "Is this patient followed by your clinic?"          = "ed_q15",
+  "Did this person contact the clinic or IC prior to being seen in the ED?" = "ed_q14",
+  "Why were they not seen in the IC?"                 = "ed_q14_1",
+  "Calculated Length of Time in ED"                   = "ed_q12",
+  "Calculated Length of Time in ED (Date/Time)"       = "ed_q12_dt",
+  "Calculated Time to First Dose"                     = "ed_q11",
+  "Calculated Time to First Dose (Date/Time)"         = "ed_q11_dt",
+  "Calculated Change in Pain Score"                   = "ed_q13",
+  'Date Data Entered (Click "Today")'                 = "ed_data",
+  "Notes"                                             = "ed_notes",
+  "Complete?"                                         = "ed_instrument_complete",
+  "If other, please specify"                          = "ed_q14_1_1",
+
+  # ---------------- IC ----------------
+  "How did the patient connect with the IC?"          = "ic_q18",
+  "Visit Date"                                        = "ic_q03",
+  "Day of the Week"                                   = "ic_q14",
+  "Visit Time"                                        = "ic_q04",
+  "Arrival Calctext"                                  = "ic_q04_calctext",
+  "Visit Date/Time (check-in time)"                   = "ic_q04_dt",
+  "Arrived From"                                      = "ic_q10",
+  "First Medication Administration Date"              = "ic_q05_date",
+  "First Medication Administration Time"              = "ic_q05",
+  "First Medication Calctext"                         = "ic_q05_calctext",
+  "First Medication Administration Date/Time"         = "ic_q05_dt",
+  "Last Medication Administration Time"               = "ic_q06",
+  "Last Medication Administration Date/Time"          = "ic_q06_dt",
+  "First Pain Score"                                  = "ic_q07",
+  "Last Pain Score"                                   = "ic_q08",
+  "Discharge Date"                                    = "ic_q09_date",
+  "Discharge Time"                                    = "ic_q09",
+  "Discharge Calctext"                                = "ic_q09_calctext",
+  "Discharge Date/Time"                               = "ic_q09_dt",
+  "Disposition"                                       = "ic_q11",
+  "If Disposition Other, Please Specify"              = "ic_q11_1",
+  "Acute Return to ED or IC Within 7 Days"            = "ic_q12",
+  "Hospital Admission Within 7 Days"                  = "ic_q13",
+  "Calculated Time to First Dose"                     = "ic_q15",
+  "Calculated Time to First Dose (Date/Time)"         = "ic_q15_dt",
+  "Calculated Length of Time in IC"                   = "ic_q16",
+  "Calculated Length of Time in IC (Date/Time)"       = "ic_q16_dt",
+  "Calculated Change in Pain Score"                   = "ic_q17",
+  'Date Data entered (Click "Today")'                 = "ic_data",
+  "Notes"                                             = "ic_notes",
+  "Complete?"                                         = "ic_instrument_complete"
+
+  # IC-specific "If other, please specify" (for Arrived From = Other)
+  # WARNING: this label is identical to the ED one; you cannot map both at once without disambiguation.
+  # "If other, please specify"                        = "ic_q10_1"
+)
+```
+
+# Data cleaning for IC
+```{r}
+##Consort table
+#Blank Table to Build Consort Data
+consort_table <- data.frame(
+  step = character(),
+  included = numeric(),
+  excluded = numeric(),   # should be numeric to match NA_real_
+  stringsAsFactors = FALSE
+)
+
+consort_table <- rbind(consort_table, 
+                       data.frame(step = "Raw data: all sites",
+                                  included = nrow(df_ic) + nrow(df_ic_vcu),
+                                  excluded = NA_real_
+                                  ))
+
+##Look at minimally useful columns
+intersect(names(df_ic_vcu), names(df_ic)); setdiff(names(df_ic_vcu), names(df_ic)); setdiff(names(df_ic_vcu), names(df_ic_vcu))
+
+##Rename
+dfs <- list(df_ic = df_ic,
+            df_ic_vcu = df_ic_vcu)
+
+dfs <- lapply(dfs, \(df) {
+  df$site_id <- df$ic_q02
+  df$first_painscore <- df$ic_q07
+  df$last_painscore <- df$ic_q08
+  df$arrived_from <- df$ic_q10
+  df$disposition <- df$ic_q11
+  df$disposition_other <- df$ic_q11_1
+  df$acute_return_7days <- df$ic_q12
+  df
+})
+
+
+##Standardize missingness
+
+#What classes are present in each df (and how many columns of each class)
+type_summary <- lapply(dfs, \(d) {
+  cls <- sapply(d, \(x) class(x)[1])  
+  sort(table(cls), decreasing = TRUE)
+})
+
+type_summary
+
+#Possible missingness strings
+missing_chr <- c("", "na", "n/a", "null", "none", "unknown", "unk", ".", "..", "-", "--")
+missing_num <- c(-9, -99, -999, 999, 9999)
+
+dfs <- lapply(dfs, \(df) {
+  df %>%
+    # 1) character: trim whitespace + convert common "missing strings" to NA
+    mutate(across(where(is.character), \(x) {
+      x <- trimws(x)
+      x[tolower(x) %in% missing_chr] <- NA_character_
+      x
+    })) %>%
+    # 2) numeric: convert sentinel codes to NA
+    mutate(across(where(is.numeric), \(x) {
+      x[x %in% missing_num] <- NA_real_
+      x
+    })) %>%
+    # 3) integer: convert sentinel codes to NA
+    mutate(across(where(is.integer), \(x) {
+      x[x %in% missing_num] <- NA_integer_
+      x
+    })) 
+})
+
+##Handle datetime
+dfs$df_ic <- dfs$df_ic %>% 
+  mutate(checkin_datetime = parse_date_time(ic_q04_dt, orders = "ymd HM", tz = "America/New_York"),
+         firstmedadmin_datetime = parse_date_time(ic_q05_dt, orders = "ymd HM", tz = "America/New_York"),
+         lastmedadmin_datetime = parse_date_time(ic_q06_dt, orders = "ymd HM", tz = "America/New_York"),
+         discharge_datetime = parse_date_time(ic_q09_dt, orders = "ymd HM", tz = "America/New_York")
+  )
+dfs$df_ic_vcu <- dfs$df_ic_vcu %>% 
+  mutate(checkin_datetime = parse_date_time(ic_q04_dt, orders = "mdy HM", tz = "America/New_York"),
+         firstmedadmin_datetime = parse_date_time(ic_q05_dt, orders = "mdy HM", tz = "America/New_York"),
+         lastmedadmin_datetime = parse_date_time(ic_q06_dt, orders = "mdy HM", tz = "America/New_York"),
+         discharge_datetime = parse_date_time(ic_q09_dt, orders = "mdy HM", tz = "America/New_York")
+  )
+
+
+#check
+head(dfs$df_ic$checkin_datetime)
+head(dfs$df_ic$ic_q04_dt)
+head(dfs$df_ic$firstmedadmin_datetime)
+head(dfs$df_ic$ic_q05_dt)
+
+head(dfs$df_ic_vcu$checkin_datetime)
+head(dfs$df_ic_vcu$ic_q04_dt)
+head(dfs$df_ic_vcu$firstmedadmin_datetime)
+head(dfs$df_ic_vcu$ic_q05_dt)
+
+##Normalize text
+dfs <- lapply(dfs, \(df) {
+  df <- df %>%
+    mutate(across(where(is.character), \(x) tolower(trimws(x))))
+})
+
+##Check for missingness
+cols <- c("first_painscore","last_painscore","arrived_from","disposition",
+          "disposition_other","acute_return_7days","checkin_datetime",
+          "firstmedadmin_datetime","lastmedadmin_datetime","discharge_datetime")
+
+missingness <- imap_dfr(dfs, \(dat, nm) {
+  tibble(
+    df = nm,
+    column = cols,
+    missing_n = sapply(cols, \(cl) sum(is.na(dat[[cl]]))),
+    missing_pct = sapply(cols, \(cl) mean(is.na(dat[[cl]])) * 100)
+  )
+})
+
+missingness %>% print(n = 24)
+
+all_missing_counts <- imap_dfr(dfs, \(dat, nm) {
+  tibble(
+    df = nm,
+    n_all_missing = dat %>% summarise(n = sum(if_all(all_of(cols), is.na))) %>% pull(n),
+    pct_all_missing = n_all_missing / nrow(dat) * 100
+  )
+})
+
+all_missing_counts
+
+any_missing_counts <- imap_dfr(dfs, \(dat, nm) {
+  n_any <- dat %>% summarise(n = sum(if_any(all_of(cols), is.na))) %>% pull(n)
+  tibble(
+    df = nm,
+    n_any_missing = n_any,
+    pct_any_missing = n_any / nrow(dat) * 100
+  )
+})
+
+any_missing_counts
+
+missingness_repeated_instrument <- imap_dfr(list(df_ic = dfs$df_ic[dfs$df_ic$redcap_repeat_instrument %>% is.na(),], 
+                                                 df_ic_vcu = dfs$df_ic_vcu[dfs$df_ic_vcu$redcap_repeat_instrument  %>% is.na(),]), \(dat, nm) {
+  tibble(
+    df = nm,
+    column = cols,
+    missing_n = sapply(cols, \(cl) sum(is.na(dat[[cl]]))),
+    missing_pct = sapply(cols, \(cl) mean(is.na(dat[[cl]])) * 100)
+  )
+})
+
+missingness_repeated_instrument
+
+##Combine data
+cols <- c("patient_id", "site_id", "redcap_event_name", "redcap_repeat_instrument", "redcap_repeat_instance", cols, "ic_notes",
+          "ic_instrument_complete")
+
+dfs$df_ic_vcu$patient_id <- paste0("sitei-", sprintf("%04d", as.integer(dfs$df_ic_vcu$patient_id)))
+dfs$df_ic_vcu$site_id <- "VCU SITEI"
+
+df_ic <- bind_rows(select(dfs$df_ic, all_of(cols)), 
+                   select(dfs$df_ic_vcu, all_of(cols)))
+
+##Filter noninformative entries (fields all missing)
+useful_cols <- c("first_painscore","last_painscore","arrived_from","disposition",
+          "disposition_other","acute_return_7days","checkin_datetime",
+          "firstmedadmin_datetime","lastmedadmin_datetime","discharge_datetime", "ic_notes", "ic_instrument_complete")
+
+df_ic <- df_ic %>%
+  filter(
+    !is.na(redcap_repeat_instrument) &
+      !if_all(all_of(useful_cols), ~ is.na(.))
+  )
+
+consort_table <- rbind(consort_table, 
+                       data.frame(step = "Removing noninformative entries",
+                                  included = nrow(df_ic),
+                                  excluded = consort_table$included[1] - nrow(df_ic)
+                                  ))
+
+
+minimally_useful <- c("first_painscore","last_painscore","arrived_from","disposition","acute_return_7days","checkin_datetime",
+          "firstmedadmin_datetime","lastmedadmin_datetime","discharge_datetime")
+missing_profile <- df_ic %>%
+    mutate(number_of_variables_missing = rowSums(is.na(across(all_of(minimally_useful))))) %>%
+    count(number_of_variables_missing, name = "n_rows") %>%
+    arrange(desc(number_of_variables_missing))   
+
+missing_profile
+
+##Extreme values
+summary(df_ic[,minimally_useful])
+
+##Implausible date values
+datetime <- c("checkin_datetime","firstmedadmin_datetime","lastmedadmin_datetime","discharge_datetime")
+
+df_ic1 <- df_ic %>% 
+  filter(!if_any(all_of(datetime), ~ !is.na(.) & . < as.POSIXct("2023-04-01 00:00:00", tz = "America/New_York")))
+
+consort_table <- rbind(consort_table, 
+                       data.frame(step = "df_ic1: After 04/23",
+                                  included = nrow(df_ic1),
+                                  excluded = consort_table$included[2] - nrow(df_ic1)
+                                  ))
+
+#Check firstmed after checkin date time
+df_ic2 <- df_ic1 %>%
+  mutate(
+    implausible_time_order_timetofirstmed =
+      !is.na(checkin_datetime) & !is.na(firstmedadmin_datetime) &
+      !(checkin_datetime <= firstmedadmin_datetime)
+  )
+sum(df_ic2$implausible_time_order_timetofirstmed, na.rm = TRUE)
+
+df_ic2 <- df_ic2 %>% 
+  filter(!implausible_time_order_timetofirstmed)
+
+consort_table <- rbind(consort_table, 
+                       data.frame(step = "df_ic2: firstmed after checkin date time",
+                                  included = nrow(df_ic2),
+                                  excluded = consort_table$included[3] - nrow(df_ic2)
+                                  ))
+
+#Check impossible date values (e.g., discharge before med given)
+df_ic3 <- df_ic2 %>%
+  mutate(
+    implausible_time_order_full =
+      !is.na(checkin_datetime) & !is.na(firstmedadmin_datetime) &
+      !is.na(lastmedadmin_datetime) & !is.na(discharge_datetime) &
+      !(checkin_datetime <= firstmedadmin_datetime &
+          firstmedadmin_datetime <= lastmedadmin_datetime &
+          lastmedadmin_datetime <= discharge_datetime)
+  )
+sum(df_ic3$implausible_time_order_full, na.rm = TRUE)
+
+#Below code does this: Fix date entry errors: if exactly 3 dates share the same date and 1 differs, correct the odd one to match (keeps original time)
+df_ic3 <- df_ic3 %>%
+  rowwise() %>%
+  mutate(
+    # extract dates only (ignore time)
+    d1 = as.Date(checkin_datetime),
+    d2 = as.Date(firstmedadmin_datetime),
+    d3 = as.Date(lastmedadmin_datetime),
+    d4 = as.Date(discharge_datetime)
+  ) %>%
+  mutate(
+    # find which date is the odd one out
+    dates_vec = list(c(d1, d2, d3, d4)),
+    date_tbl = {
+      dts <- c(d1, d2, d3, d4)
+      tbl <- table(dts)
+      list(tbl)
+    },
+    # mode date (most frequent)
+    mode_date = {
+      dts <- c(d1, d2, d3, d4)
+      dts <- dts[!is.na(dts)]
+      if (length(dts) == 0) {
+        as.Date(NA)
+      } else {
+        tbl <- table(dts)
+        as.Date(names(tbl)[which.max(tbl)])
+      }
+    },
+    # count how many match mode
+    n_match_mode = {
+      dts <- c(d1, d2, d3, d4)
+      sum(dts == mode_date, na.rm = TRUE)
+    }
+  ) %>%
+  mutate(
+    # only fix if exactly 3 match and 1 differs
+    checkin_datetime = if (isTRUE(implausible_time_order_full) && n_match_mode == 3 && !is.na(d1) && d1 != mode_date) {
+      update(checkin_datetime, year = year(mode_date), month = month(mode_date), mday = mday(mode_date))
+    } else {
+      checkin_datetime
+    },
+    firstmedadmin_datetime = if (isTRUE(implausible_time_order_full) && n_match_mode == 3 && !is.na(d2) && d2 != mode_date) {
+      update(firstmedadmin_datetime, year = year(mode_date), month = month(mode_date), mday = mday(mode_date))
+    } else {
+      firstmedadmin_datetime
+    },
+    lastmedadmin_datetime = if (isTRUE(implausible_time_order_full) && n_match_mode == 3 && !is.na(d3) && d3 != mode_date) {
+      update(lastmedadmin_datetime, year = year(mode_date), month = month(mode_date), mday = mday(mode_date))
+    } else {
+      lastmedadmin_datetime
+    },
+    discharge_datetime = if (isTRUE(implausible_time_order_full) && n_match_mode == 3 && !is.na(d4) && d4 != mode_date) {
+      update(discharge_datetime, year = year(mode_date), month = month(mode_date), mday = mday(mode_date))
+    } else {
+      discharge_datetime
+    }
+  ) %>%
+  select(-d1, -d2, -d3, -d4, -dates_vec, -date_tbl, -mode_date, -n_match_mode) %>%
+  ungroup()
+
+# recheck
+df_ic3 <- df_ic3 %>%
+  mutate(
+    implausible_time_order_full =
+      !is.na(checkin_datetime) & !is.na(firstmedadmin_datetime) &
+      !is.na(lastmedadmin_datetime) & !is.na(discharge_datetime) &
+      !(checkin_datetime <= firstmedadmin_datetime &
+          firstmedadmin_datetime <= lastmedadmin_datetime &
+          lastmedadmin_datetime <= discharge_datetime)
+  )
+sum(df_ic$implausible_time_order_full, na.rm = TRUE)
+
+#quick count
+df_ic3 %>% summarise(n_implausible = sum(implausible_time_order_full, na.rm = TRUE),
+                    pct_implausible = 100 * mean(implausible_time_order_full, na.rm = TRUE))
+
+df_ic3 <- df_ic3 %>% 
+  filter(!implausible_time_order_full)
+
+consort_table <- rbind(consort_table, 
+                       data.frame(step = "df_ic3: removing ALL impossible date values (e.g., discharge before med given)",
+                                  included = nrow(df_ic3),
+                                  excluded = consort_table$included[4] - nrow(df_ic3)
+                                  ))
+
+##Disposition
+discharge_labels <- c("Home", "ED for ongoing care", "ED for hospital admission", "Direct hospital admission", "Other")
+df_ic1$disposition <- discharge_labels[df_ic1$disposition]
+
+table(df_ic1$disposition, useNA = "ifany")
+
+df_ic1.1 <- df_ic1 %>% 
+  filter(!is.na(disposition))
+
+consort_table <- rbind(consort_table, 
+                       data.frame(step = "df_ic1.1: Remove those with no disposition info",
+                                  included = nrow(df_ic1.1),
+                                  excluded = nrow(df_ic1) - nrow(df_ic1.1)
+                                  ))
+
+```
+
+# Data cleaning for ED
+
