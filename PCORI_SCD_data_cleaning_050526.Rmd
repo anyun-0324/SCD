@@ -10,8 +10,8 @@ ETL and cleaning of PCORI SCD data; we have all sites for ED & IC including Bost
 # Clearing environment, loading raw data from REDCap
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-setwd("H:/PCORI SCD data")
-ls(); rm(list = ls())
+'setwd("setprojectdirectory")'
+ls(); rm(list = ls()); gc();
 require(gtsummary)
 require(readr)
 require(writexl)
@@ -22,19 +22,19 @@ require(magrittr)
 require(tidyverse)
 require(purrr)
 
-df_ed <- read.csv("H:/PCORI SCD data/SCDInfusionCenterImp-EDData_DATA_2026-05-05_1628.csv")
-df_ic <- read.csv("H:/PCORI SCD data/SCDInfusionCenterImp-ICData_DATA_2026-05-05_1629.csv")
+df_ed <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/SCDInfusionCenterImp-EDData_DATA_2026-05-05_1628.csv")
+df_ic <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/SCDInfusionCenterImp-ICData_DATA_2026-05-05_1629.csv")
 
-if (length(excel_sheets("H:/PCORI SCD data/VCU_ED_rawdata.xlsx")) != 1) {
-  multiple_sheets <- lapply(excel_sheets("H:/PCORI SCD data/VCU_ED_rawdata.xlsx"), 
-                            \(s) read_excel("H:/PCORI SCD data/VCU_ED_rawdata.xlsx", sheet = s))
+if (length(excel_sheets("\\\\win.ad.jhu.edu/Users$/HOME/SCD/VCU_ED_rawdata.xlsx")) != 1) {
+  multiple_sheets <- lapply(excel_sheets("\\\\win.ad.jhu.edu/Users$/HOME/SCD/VCU_ED_rawdata.xlsx"), 
+                            \(s) read_excel("\\\\win.ad.jhu.edu/Users$/HOME/SCD/VCU_ED_rawdata.xlsx", sheet = s))
   names(multiple_sheets)
 } else {
-  df_ed_vcu <- read_excel("H:/PCORI SCD data/VCU_ED_rawdata.xlsx")
+  df_ed_vcu <- read_excel("\\\\win.ad.jhu.edu/Users$/HOME/SCD/VCU_ED_rawdata.xlsx")
   print("one sheet only")
 }
 
-df_ic_vcu <- read.csv("H:/PCORI SCD data/vcu_ic 1.csv")
+df_ic_vcu <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/vcu_ic 1.csv")
 
 df_ic %>% names()
 df_ic_vcu %>% names()
@@ -216,16 +216,16 @@ dfs <- lapply(dfs, \(df) {
 
 ##Handle datetime
 dfs$df_ic <- dfs$df_ic %>% 
-  mutate(checkin_datetime = parse_date_time(ic_q04_dt, orders = "ymd HM", tz = "America/New_York"),
-         firstmedadmin_datetime = parse_date_time(ic_q05_dt, orders = "ymd HM", tz = "America/New_York"),
-         lastmedadmin_datetime = parse_date_time(ic_q06_dt, orders = "ymd HM", tz = "America/New_York"),
-         discharge_datetime = parse_date_time(ic_q09_dt, orders = "ymd HM", tz = "America/New_York")
+  mutate(checkin_datetime = parse_date_time(ic_q04_dt, orders = "ymd HM", tz = "UTC"),
+         firstmedadmin_datetime = parse_date_time(ic_q05_dt, orders = "ymd HM", tz = "UTC"),
+         lastmedadmin_datetime = parse_date_time(ic_q06_dt, orders = "ymd HM", tz = "UTC"),
+         discharge_datetime = parse_date_time(ic_q09_dt, orders = "ymd HM", tz = "UTC")
   )
 dfs$df_ic_vcu <- dfs$df_ic_vcu %>% 
-  mutate(checkin_datetime = parse_date_time(ic_q04_dt, orders = "mdy HM", tz = "America/New_York"),
-         firstmedadmin_datetime = parse_date_time(ic_q05_dt, orders = "mdy HM", tz = "America/New_York"),
-         lastmedadmin_datetime = parse_date_time(ic_q06_dt, orders = "mdy HM", tz = "America/New_York"),
-         discharge_datetime = parse_date_time(ic_q09_dt, orders = "mdy HM", tz = "America/New_York")
+  mutate(checkin_datetime = parse_date_time(ic_q04_dt, orders = "mdy HM", tz = "UTC"),
+         firstmedadmin_datetime = parse_date_time(ic_q05_dt, orders = "mdy HM", tz = "UTC"),
+         lastmedadmin_datetime = parse_date_time(ic_q06_dt, orders = "mdy HM", tz = "UTC"),
+         discharge_datetime = parse_date_time(ic_q09_dt, orders = "mdy HM", tz = "UTC")
   )
 
 
@@ -339,7 +339,7 @@ summary(df_ic[,minimally_useful])
 datetime <- c("checkin_datetime","firstmedadmin_datetime","lastmedadmin_datetime","discharge_datetime")
 
 df_ic1 <- df_ic %>% 
-  filter(!if_any(all_of(datetime), ~ !is.na(.) & . < as.POSIXct("2023-04-01 00:00:00", tz = "America/New_York")))
+  filter(!if_any(all_of(datetime), ~ !is.na(.) & . < as.POSIXct("2023-04-01 00:00:00", tz = "UTC")))
 
 consort_table <- rbind(consort_table, 
                        data.frame(step = "df_ic1: After 04/23",
@@ -347,7 +347,7 @@ consort_table <- rbind(consort_table,
                                   excluded = consort_table$included[2] - nrow(df_ic1)
                                   ))
 
-#Check firstmed after checkin date time
+#Check firstmed after checkin date time AND  and multiple visits in a day
 df_ic2 <- df_ic1 %>%
   mutate(
     implausible_time_order_timetofirstmed =
@@ -358,6 +358,18 @@ sum(df_ic2$implausible_time_order_timetofirstmed, na.rm = TRUE)
 
 df_ic2 <- df_ic2 %>% 
   filter(!implausible_time_order_timetofirstmed)
+
+nrow(df_ic2)
+
+df_ic2 <- df_ic2 %>%
+  mutate(checkin_date = as.Date(checkin_datetime)) %>%
+  arrange(patient_id, checkin_date, checkin_datetime) %>%
+  group_by(patient_id, checkin_date) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(-checkin_date)
+
+nrow(df_ic2)
 
 consort_table <- rbind(consort_table, 
                        data.frame(step = "df_ic2: firstmed after checkin date time",
@@ -481,4 +493,102 @@ consort_table <- rbind(consort_table,
 ```
 
 # Data cleaning for ED
+```{r}
+##Consort table
+#Blank Table to Build Consort Data
+consort_table_ed <- data.frame(
+  step = character(),
+  included = numeric(),
+  excluded = numeric(),   # should be numeric to match NA_real_
+  stringsAsFactors = FALSE
+)
+
+consort_table_ed <- rbind(consort_table_ed, 
+                       data.frame(step = "Raw data: all sites",
+                                  included = nrow(df_ed) + nrow(df_ed_vcu),
+                                  excluded = NA_real_
+                                  ))
+
+##Look at minimally useful columns
+intersect(names(df_ed_vcu), names(df_ed)); setdiff(names(df_ed_vcu), names(df_ed)); setdiff(names(df_ed), names(df_ed_vcu))
+
+##Rename
+dfs <- list(df_ed = df_ed,
+            df_ed_vcu = df_ed_vcu)
+
+dfs <- lapply(dfs, \(df) {
+  df$site_id <- df$ed_q02
+  df$first_painscore <- df$ed_q07
+  df$last_painscore <- df$ed_q08
+  df$checkin_datetime <- df$ed_q04_dt
+  df$firstmedadmin_datetime <- df$ed_q05_dt
+  df$lastmedadmin_datetime <- df$ed_q06_dt
+  df$discharge_datetime <- df$ed_q09_dt
+  df$disposition <- df$ed_q10
+  df
+})
+
+##Standardize missingness
+
+#What classes are present in each df (and how many columns of each class)
+type_summary <- lapply(dfs, \(d) {
+  cls <- sapply(d, \(x) class(x)[1])  
+  sort(table(cls), decreasing = TRUE)
+})
+
+type_summary
+
+#Possible missingness strings
+missing_chr <- c("", "na", "n/a", "null", "none", "unknown", "unk", ".", "..", "-", "--")
+missing_num <- c(-9, -99, -999, 999, 9999)
+
+dfs <- lapply(dfs, \(df) {
+  df %>%
+    # 1) character: trim whitespace + convert common "missing strings" to NA
+    mutate(across(where(is.character), \(x) {
+      x <- trimws(x)
+      x[tolower(x) %in% missing_chr] <- NA_character_
+      x
+    })) %>%
+    # 2) numeric: convert sentinel codes to NA
+    mutate(across(where(is.numeric), \(x) {
+      x[x %in% missing_num] <- NA_real_
+      x
+    })) %>%
+    # 3) integer: convert sentinel codes to NA
+    mutate(across(where(is.integer), \(x) {
+      x[x %in% missing_num] <- NA_integer_
+      x
+    })) 
+})
+
+##Handle datetime
+dfs$df_ed <- dfs$df_ed %>% 
+  mutate(checkin_datetime = parse_date_time(checkin_datetime, orders = "ymd HM", tz = "UTC"),
+         firstmedadmin_datetime = parse_date_time(firstmedadmin_datetime, orders = "ymd HM", tz = "UTC"),
+         lastmedadmin_datetime = parse_date_time(lastmedadmin_datetime, orders = "ymd HM", tz = "UTC"),
+         discharge_datetime = parse_date_time(discharge_datetime, orders = "ymd HM", tz = "UTC")
+  )
+dfs$df_ed_vcu <- dfs$df_ed_vcu %>% 
+  mutate(checkin_datetime = as.POSIXct((as.numeric(checkin_datetime) - 25569) * 86400, origin = "1970-01-01", tz = "UTC"),
+         firstmedadmin_datetime = parse_date_time(firstmedadmin_datetime, orders = "mdy HM", tz = "UTC"),
+         lastmedadmin_datetime = parse_date_time(lastmedadmin_datetime, orders = "mdy HM", tz = "UTC"),
+         discharge_datetime = as.POSIXct((as.numeric(discharge_datetime) - 25569) * 86400, origin = "1970-01-01", tz = "UTC")
+  )
+
+
+#check
+head(dfs$df_ed$checkin_datetime)
+head(dfs$df_ed$firstmedadmin_datetime)
+
+head(dfs$df_ed_vcu$checkin_datetime)
+head(dfs$df_ed_vcu$firstmedadmin_datetime)
+
+##Normalize text
+dfs <- lapply(dfs, \(df) {
+  df <- df %>%
+    mutate(across(where(is.character), \(x) tolower(trimws(x))))
+})
+
+```
 
