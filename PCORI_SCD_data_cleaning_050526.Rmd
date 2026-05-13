@@ -251,18 +251,19 @@ cols <- c("first_painscore","last_painscore","arrived_from","disposition",
           "disposition_other","acute_return_7days","checkin_datetime",
           "firstmedadmin_datetime","lastmedadmin_datetime","discharge_datetime")
 
-missingness <- imap_dfr(dfs, \(dat, nm) {
-  tibble(
-    df = nm,
-    column = cols,
-    missing_n = sapply(cols, \(cl) sum(is.na(dat[[cl]]))),
-    missing_pct = sapply(cols, \(cl) mean(is.na(dat[[cl]])) * 100)
-  )
+missingness_desc_ic <- imap_dfr(dfs, \(dat, nm) {
+    tibble(
+        df = nm,
+        column = cols,
+        missing_n = map_int(cols, \(cl) sum(is.na(dat[[cl]]))),
+        missing_pct = map_dbl(cols, \(cl) mean(is.na(dat[[cl]])) * 100)
+    ) %>%
+        arrange(desc(missing_pct))
 })
 
-missingness %>% print(n = 24)
+missingness_desc_ic
 
-all_missing_counts <- imap_dfr(dfs, \(dat, nm) {
+all_missing_counts_ic <- imap_dfr(dfs, \(dat, nm) {
   tibble(
     df = nm,
     n_all_missing = dat %>% summarise(n = sum(if_all(all_of(cols), is.na))) %>% pull(n),
@@ -270,9 +271,9 @@ all_missing_counts <- imap_dfr(dfs, \(dat, nm) {
   )
 })
 
-all_missing_counts
+all_missing_counts_ic
 
-any_missing_counts <- imap_dfr(dfs, \(dat, nm) {
+any_missing_counts_ic <- imap_dfr(dfs, \(dat, nm) {
   n_any <- dat %>% summarise(n = sum(if_any(all_of(cols), is.na))) %>% pull(n)
   tibble(
     df = nm,
@@ -281,19 +282,7 @@ any_missing_counts <- imap_dfr(dfs, \(dat, nm) {
   )
 })
 
-any_missing_counts
-
-missingness_repeated_instrument <- imap_dfr(list(df_ic = dfs$df_ic[dfs$df_ic$redcap_repeat_instrument %>% is.na(),], 
-                                                 df_ic_vcu = dfs$df_ic_vcu[dfs$df_ic_vcu$redcap_repeat_instrument  %>% is.na(),]), \(dat, nm) {
-  tibble(
-    df = nm,
-    column = cols,
-    missing_n = sapply(cols, \(cl) sum(is.na(dat[[cl]]))),
-    missing_pct = sapply(cols, \(cl) mean(is.na(dat[[cl]])) * 100)
-  )
-})
-
-missingness_repeated_instrument
+any_missing_counts_ic
 
 ##Combine data
 cols <- c("patient_id", "site_id", "redcap_event_name", "redcap_repeat_instrument", "redcap_repeat_instance", cols, "ic_notes",
@@ -312,7 +301,6 @@ useful_cols <- c("first_painscore","last_painscore","arrived_from","disposition"
 
 df_ic <- df_ic %>%
   filter(
-    !is.na(redcap_repeat_instrument) &
       !if_all(all_of(useful_cols), ~ is.na(.))
   )
 
@@ -372,7 +360,7 @@ df_ic2 <- df_ic2 %>%
 nrow(df_ic2)
 
 consort_table <- rbind(consort_table, 
-                       data.frame(step = "df_ic2: firstmed after checkin date time",
+                       data.frame(step = "df_ic2: firstmed after checkin date time and ONE visit per day per patient",
                                   included = nrow(df_ic2),
                                   excluded = consort_table$included[3] - nrow(df_ic2)
                                   ))
@@ -424,9 +412,10 @@ df_ic3 <- df_ic3 %>%
       sum(dts == mode_date, na.rm = TRUE)
     }
   ) %>%
+  mutate(n_nonmiss_dates = sum(!is.na(c(d1, d2, d3, d4)))) %>% 
   mutate(
     # only fix if exactly 3 match and 1 differs
-    checkin_datetime = if (isTRUE(implausible_time_order_full) && n_match_mode == 3 && !is.na(d1) && d1 != mode_date) {
+    checkin_datetime = if (isTRUE(implausible_time_order_full) && n_nonmiss_dates == 4 && n_match_mode == 3 && !is.na(d1) && d1 != mode_date) {
       update(checkin_datetime, year = year(mode_date), month = month(mode_date), mday = mday(mode_date))
     } else {
       checkin_datetime
@@ -470,16 +459,24 @@ df_ic3 <- df_ic3 %>%
   filter(!implausible_time_order_full)
 
 consort_table <- rbind(consort_table, 
-                       data.frame(step = "df_ic3: removing ALL impossible date values (e.g., discharge before med given)",
+                       data.frame(step = "df_ic3: removing ALL impossible date values with order problems (e.g., discharge before med given)",
                                   included = nrow(df_ic3),
                                   excluded = consort_table$included[4] - nrow(df_ic3)
                                   ))
 
 ##Disposition
+table(df_ic1$disposition)
 discharge_labels <- c("Home", "ED for ongoing care", "ED for hospital admission", "Direct hospital admission", "Other")
-df_ic1$disposition <- discharge_labels[df_ic1$disposition]
+df_ic1 <- df_ic1 %>%
+  mutate(discharge = dplyr::recode(disposition,
+                                  `1`  = "Home",
+                                  `2`  = "ED for ongoing care",
+                                  `3`  = "ED for hospital admission",
+                                  `4`  = "Direct hospital admission",
+                                  `88` = "Other",
+                                  .default = NA_character_))
 
-table(df_ic1$disposition, useNA = "ifany")
+table(df_ic1$discharge, useNA = "ifany")
 
 df_ic1.1 <- df_ic1 %>% 
   filter(!is.na(disposition))
@@ -589,6 +586,257 @@ dfs <- lapply(dfs, \(df) {
   df <- df %>%
     mutate(across(where(is.character), \(x) tolower(trimws(x))))
 })
+
+
+##Check for missingness
+cols <- intersect(names(dfs$df_ed),names(dfs$df_ed_vcu))
+
+missingness <- imap_dfr(dfs, \(dat, nm) {
+  tibble(
+    df = nm,
+    column = cols,
+    missing_n = sapply(cols, \(cl) sum(is.na(dat[[cl]]))),
+    missing_pct = sapply(cols, \(cl) mean(is.na(dat[[cl]])) * 100)
+  )
+})
+
+missingness %>% print(n = 24)
+
+all_missing_counts <- imap_dfr(dfs, \(dat, nm) {
+  tibble(
+    df = nm,
+    n_all_missing = dat %>% summarise(n = sum(if_all(all_of(cols), is.na))) %>% pull(n),
+    pct_all_missing = n_all_missing / nrow(dat) * 100
+  )
+})
+
+all_missing_counts
+
+missingness_desc <- imap_dfr(dfs, \(dat, nm) {
+    tibble(
+        df = nm,
+        column = cols,
+        missing_n = map_int(cols, \(cl) sum(is.na(dat[[cl]]))),
+        missing_pct = map_dbl(cols, \(cl) mean(is.na(dat[[cl]])) * 100)
+    ) %>%
+        arrange(desc(missing_pct))
+})
+
+missingness_desc
+
+##Combine data
+cols <- c(
+  "patient_id",
+  "redcap_event_name",
+  "redcap_repeat_instrument",
+  "redcap_repeat_instance",
+  "site_id",
+  "checkin_datetime",
+  "firstmedadmin_datetime",
+  "lastmedadmin_datetime",
+  "discharge_datetime",
+  "first_painscore",
+  "last_painscore",
+  "disposition"
+)
+  
+dfs$df_ed_vcu$redcap_repeat_instrument <- dfs$df_ed_vcu$redcap_repeat_instrument %>% as.character() 
+dfs$df_ed_vcu$redcap_repeat_instance <- dfs$df_ed_vcu$redcap_repeat_instance %>% as.character() %>% as.numeric()
+dfs$df_ed_vcu$first_painscore <- dfs$df_ed_vcu$first_painscore %>% as.character() %>% as.numeric()
+dfs$df_ed_vcu$last_painscore <- dfs$df_ed_vcu$last_painscore %>% as.character() %>% as.numeric()
+dfs$df_ed_vcu$disposition <- dfs$df_ed_vcu$disposition %>% as.character() %>% as.numeric()
+
+df_ed <- bind_rows(select(dfs$df_ed, all_of(cols)), 
+                   select(dfs$df_ed_vcu, all_of(cols)))
+
+##Filter noninformative entries (fields all missing)
+useful_cols <- c(
+  "checkin_datetime",
+  "firstmedadmin_datetime",
+  "lastmedadmin_datetime",
+  "discharge_datetime",
+  "first_painscore",
+  "last_painscore",
+  "disposition"
+)
+df_ed <- df_ed %>%
+  filter(
+      !if_all(all_of(useful_cols), ~ is.na(.))
+  )
+
+consort_table_ed <- rbind(consort_table_ed, 
+                       data.frame(step = "Removing noninformative entries",
+                                  included = nrow(df_ed),
+                                  excluded = consort_table$included[1] - nrow(df_ed)
+                                  ))
+
+##Extreme values
+summary(df_ed[,useful_cols])
+
+##Implausible date values
+datetime <- c("checkin_datetime","firstmedadmin_datetime","lastmedadmin_datetime","discharge_datetime")
+
+df_ed1 <- df_ed %>% 
+  filter(!if_any(all_of(datetime), ~ !is.na(.) & . < as.POSIXct("2023-04-01 00:00:00", tz = "UTC")))
+
+consort_table_ed <- rbind(consort_table_ed, 
+                       data.frame(step = "df_ed1: After 04/23",
+                                  included = nrow(df_ed1),
+                                  excluded = consort_table_ed$included[2] - nrow(df_ed1)
+                                  ))
+
+#Check firstmed after checkin date time AND and multiple visits in a day
+df_ed2 <- df_ed1 %>%
+  mutate(
+    implausible_time_order_timetofirstmed =
+      !is.na(checkin_datetime) & !is.na(firstmedadmin_datetime) &
+      !(checkin_datetime <= firstmedadmin_datetime)
+  )
+sum(df_ed2$implausible_time_order_timetofirstmed, na.rm = TRUE)
+
+df_ed2 <- df_ed2 %>% 
+  filter(!implausible_time_order_timetofirstmed)
+
+nrow(df_ed2)
+
+df_ed2 <- df_ed2 %>%
+  mutate(checkin_date = as.Date(checkin_datetime)) %>%
+  arrange(patient_id, checkin_date, checkin_datetime) %>%
+  group_by(patient_id, checkin_date) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(-checkin_date)
+
+nrow(df_ed2)
+
+consort_table_ed <- rbind(consort_table_ed, 
+                       data.frame(step = "df_ed2: firstmed after checkin date time and ONE visit per day per patient",
+                                  included = nrow(df_ed2),
+                                  excluded = consort_table_ed$included[3] - nrow(df_ed2)
+                                  ))
+
+#Check impossible date values (e.g., discharge before med given)
+df_ed3 <- df_ed2 %>%
+  mutate(
+    implausible_time_order_full =
+      !is.na(checkin_datetime) & !is.na(firstmedadmin_datetime) &
+      !is.na(lastmedadmin_datetime) & !is.na(discharge_datetime) &
+      !(checkin_datetime <= firstmedadmin_datetime &
+          firstmedadmin_datetime <= lastmedadmin_datetime &
+          lastmedadmin_datetime <= discharge_datetime)
+  )
+sum(df_ed3$implausible_time_order_full, na.rm = TRUE)
+
+#Below code does this: Fix date entry errors: if exactly 3 dates share the same date and 1 differs, correct the odd one to match (keeps original time)
+df_ed3 <- df_ed3 %>%
+  rowwise() %>%
+  mutate(
+    # extract dates only (ignore time)
+    d1 = as.Date(checkin_datetime),
+    d2 = as.Date(firstmedadmin_datetime),
+    d3 = as.Date(lastmedadmin_datetime),
+    d4 = as.Date(discharge_datetime)
+  ) %>%
+  mutate(
+    # find which date is the odd one out
+    dates_vec = list(c(d1, d2, d3, d4)),
+    date_tbl = {
+      dts <- c(d1, d2, d3, d4)
+      tbl <- table(dts)
+      list(tbl)
+    },
+    # mode date (most frequent)
+    mode_date = {
+      dts <- c(d1, d2, d3, d4)
+      dts <- dts[!is.na(dts)]
+      if (length(dts) == 0) {
+        as.Date(NA)
+      } else {
+        tbl <- table(dts)
+        as.Date(names(tbl)[which.max(tbl)])
+      }
+    },
+    # count how many match mode
+    n_match_mode = {
+      dts <- c(d1, d2, d3, d4)
+      sum(dts == mode_date, na.rm = TRUE)
+    }
+  ) %>%
+  mutate(n_nonmiss_dates = sum(!is.na(c(d1, d2, d3, d4)))) %>% 
+  mutate(
+    # only fix if exactly 3 match and 1 differs
+    checkin_datetime = if (isTRUE(implausible_time_order_full) && n_nonmiss_dates == 4 && n_match_mode == 3 && !is.na(d1) && d1 != mode_date) {
+      update(checkin_datetime, year = year(mode_date), month = month(mode_date), mday = mday(mode_date))
+    } else {
+      checkin_datetime
+    },
+    firstmedadmin_datetime = if (isTRUE(implausible_time_order_full) && n_match_mode == 3 && !is.na(d2) && d2 != mode_date) {
+      update(firstmedadmin_datetime, year = year(mode_date), month = month(mode_date), mday = mday(mode_date))
+    } else {
+      firstmedadmin_datetime
+    },
+    lastmedadmin_datetime = if (isTRUE(implausible_time_order_full) && n_match_mode == 3 && !is.na(d3) && d3 != mode_date) {
+      update(lastmedadmin_datetime, year = year(mode_date), month = month(mode_date), mday = mday(mode_date))
+    } else {
+      lastmedadmin_datetime
+    },
+    discharge_datetime = if (isTRUE(implausible_time_order_full) && n_match_mode == 3 && !is.na(d4) && d4 != mode_date) {
+      update(discharge_datetime, year = year(mode_date), month = month(mode_date), mday = mday(mode_date))
+    } else {
+      discharge_datetime
+    }
+  ) %>%
+  select(-d1, -d2, -d3, -d4, -dates_vec, -date_tbl, -mode_date, -n_match_mode) %>%
+  ungroup()
+
+# recheck
+df_ed3 <- df_ed3 %>%
+  mutate(
+    implausible_time_order_full =
+      !is.na(checkin_datetime) & !is.na(firstmedadmin_datetime) &
+      !is.na(lastmedadmin_datetime) & !is.na(discharge_datetime) &
+      !(checkin_datetime <= firstmedadmin_datetime &
+          firstmedadmin_datetime <= lastmedadmin_datetime &
+          lastmedadmin_datetime <= discharge_datetime)
+  )
+sum(df_ed3$implausible_time_order_full, na.rm = TRUE)
+
+#quick count
+df_ed3 %>% summarise(n_implausible = sum(implausible_time_order_full, na.rm = TRUE),
+                    pct_implausible = 100 * mean(implausible_time_order_full, na.rm = TRUE))
+
+df_ed3 <- df_ed3 %>% 
+  filter(!implausible_time_order_full)
+
+consort_table_ed <- rbind(consort_table_ed, 
+                       data.frame(step = "df_ed3: removing ALL impossible date values with order problems (e.g., discharge before med given)",
+                                  included = nrow(df_ed3),
+                                  excluded = consort_table_ed$included[4] - nrow(df_ed3)
+                                  ))
+
+##filtering Disposition
+table(df_ed1$disposition)
+df_ed1 <- df_ed1 %>%
+  mutate(discharge = dplyr::recode(disposition,
+                                    `1`  = "Home",
+                                    `2`  = "Hospital admission",
+                                    `3`  = "Transfer to infusion clinic",
+                                    `88` = "Other",
+                                    .default = NA_character_))
+
+table(df_ed1$discharge, useNA = "ifany")
+
+df_ed1.1 <- df_ed1 %>% 
+  filter(!is.na(disposition))
+
+consort_table_ed <- rbind(consort_table_ed, 
+                       data.frame(step = "df_ed1.1: Remove those with no disposition info",
+                                  included = nrow(df_ed1.1),
+                                  excluded = nrow(df_ed1) - nrow(df_ed1.1)
+                                  ))
+
+## Random sampling VCU data 
+set.seed(123)
 
 ```
 
