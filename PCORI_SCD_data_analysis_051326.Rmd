@@ -1,0 +1,316 @@
+---
+title: "PCORI_SCD_data_cleaning_051326"
+output: html_document
+name: "Lizi Shao"
+date: "2026-05-05"
+---
+
+Data analysis of PCORI SCD data; we have all sites for ED & IC including Boston and Indiana.
+
+## Data traceability 
+this file depends on PCORI_SCD_data_cleaning_050526.Rmd. 
+
+# Clearing environment, loading raw data from REDCap
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+'setwd("setprojectdirectory")'
+ls(); rm(list = ls()); gc();
+require(gtsummary)
+require(readr)
+require(writexl)
+require(readxl)
+require(flextable)
+require(officer)
+require(magrittr)
+require(tidyverse)
+require(purrr)
+require(effectsize)
+require(lme4)
+
+consort_table_ic <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/consort_table.csv")
+consort_table_ed <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/consort_table_ed1.csv")
+
+df_ic <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/df_ic.csv")
+df_ic1 <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/df_ic1.csv")
+
+df_ic <- df_ic %>% 
+  select(-X) 
+df_ic1 <- df_ic1 %>% 
+  select(-X)
+
+df_ed <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/df_ed.csv")
+df_ed2 <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/df_ed2.csv")
+
+df_ed <- df_ed %>% 
+  select(-X) 
+df_ed2 <- df_ed2 %>% 
+  select(-X)
+
+site_levels <- c(
+  "boston medical center sitea",
+  "christiana hospital siteb",
+  "indiana university sitec",
+  "university of kansas health system sitee",
+  "university of maryland capital region health sitef",
+  "university of minnesota siteg",
+  "unc: university of north carolina sited",
+  "upmc: university of pittsburgh medical center siteh",
+  "vcu sitei"
+)
+
+reorder_site_id_fct <- function(d) {
+  d$site_id <- factor(d$site_id, levels = site_levels)
+  d
+}
+
+df_ic  <- reorder_site_id_fct(df_ic)
+df_ic1 <- reorder_site_id_fct(df_ic1)
+df_ed  <- reorder_site_id_fct(df_ed)
+df_ed2 <- reorder_site_id_fct(df_ed2)
+```
+
+# EDA and statisticl tests
+```{r}
+# Table 9 and 9.1
+number_unique_pts_bysite_ic <- tapply(df_ic1$patient_id, df_ic1$site_id, \(x) length(unique(x)))
+number_unique_pts_bysite_ic
+unname(number_unique_pts_bysite_ic)
+c
+
+number_encounters_bysite_ic <- tapply(df_ic1$patient_id, df_ic1$site_id, \(x) length(x))
+number_encounters_bysite_ic
+unname(number_encounters_bysite_ic)
+unname(number_encounters_bysite_ic) %>% sum()
+
+intended_reach <- c(584, 130, 180, 120, 227, 198, 450, 350, 1200)
+(number_unique_pts_bysite_ic/intended_reach*100) %>% round(2) %>% paste0("%")
+
+number_unique_pts_bysite_ed <- tapply(df_ed2$patient_id, df_ed2$site_id, \(x) length(unique(x)))
+number_unique_pts_bysite_ed
+number_unique_pts_bysite_ed %>% sum()
+
+## Health/health outcomes table
+df_ic2 <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/df_ic2.csv")
+df_ed3 <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/df_ed3.csv")
+
+nrow(df_ic2); length(unique(df_ic2$patient_id))
+nrow(df_ed3); length(unique(df_ed3$patient_id))
+
+fmt <- "%Y-%m-%d %H:%M:%S"   
+tz  <- "UTC"                 
+
+to_posix <- function(x) as.POSIXct(x, format = fmt, tz = tz)
+
+df_ic2$firstmedadmin_datetime <- to_posix(df_ic2$firstmedadmin_datetime)
+df_ic2$checkin_datetime       <- to_posix(df_ic2$checkin_datetime)
+df_ic2$time_to_firstdose_mins <- as.numeric(difftime(df_ic2$firstmedadmin_datetime,
+                                                    df_ic2$checkin_datetime,
+                                                    units = "mins"))
+
+df_ed3$firstmedadmin_datetime <- to_posix(df_ed3$firstmedadmin_datetime)
+df_ed3$checkin_datetime       <- to_posix(df_ed3$checkin_datetime)
+df_ed3$time_to_firstdose_mins <- as.numeric(difftime(df_ed3$firstmedadmin_datetime,
+                                                      df_ed3$checkin_datetime,
+                                                      units = "mins"))
+
+#Check navie mean difference
+t.test(df_ic2$time_to_firstdose_mins, df_ed3$time_to_firstdose_mins)
+
+#mean difference while accounting for within individual correlations
+df_ic2 <- df_ic2 %>% 
+  mutate(group = "IC")
+
+df_ed3 <- df_ed3%>% 
+  mutate(group = "ED")
+
+
+dat <- bind_rows(
+  df_ic2   %>% select(patient_id, time_to_firstdose_mins, group, site_id),
+  df_ed3 %>% select(patient_id, time_to_firstdose_mins, group, site_id)
+) %>%
+  mutate(group = factor(group, levels = c("ED","IC"))) %>%   
+  filter(!is.na(time_to_firstdose_mins), !is.na(patient_id))
+
+sum(!is.na(dat[dat$group == "IC",]$time_to_firstdose_mins))
+sum(!is.na(dat[dat$group == "ED",]$time_to_firstdose_mins))
+
+length(unique(dat$patient_id[dat$group == "IC" & !is.na(dat$time_to_firstdose_mins)]))
+length(unique(dat$patient_id[dat$group == "ED" & !is.na(dat$time_to_firstdose_mins)]))
+
+fit <- lmer(time_to_firstdose_mins ~ group + (1 | patient_id), data = dat)
+summary(fit)$coefficients
+
+#Median for both groups
+dat %>%
+  group_by(group) %>%
+  summarise(
+    q25 = quantile(time_to_firstdose_mins, 0.25, na.rm = TRUE),
+    median = quantile(time_to_firstdose_mins, 0.50, na.rm = TRUE),
+    q75 = quantile(time_to_firstdose_mins, 0.75, na.rm = TRUE)
+  )
+
+#Mean by group status and by site (no inference so naive mean)
+site_means <- dat %>%
+  filter(!is.na(time_to_firstdose_mins), !is.na(site_id)) %>%
+  group_by(group, site_id) %>%
+  summarise(site_mean = mean(time_to_firstdose_mins), .groups = "drop")
+
+# range of site-level means within each group
+site_means %>%
+  group_by(group) %>%
+  summarise(
+    min_mean = min(site_mean),
+    max_mean = max(site_mean)
+  )
+
+#Cohen's D (assumes no equal-variance assumption): Pending!
+cohens_d(df_ed2.1$time_to_firstdose_mins,
+         df_ic2$time_to_firstdose_mins,
+         pooled_sd = FALSE)
+
+##Figure1. 
+n_ed <- sum(dat$group == "ED")
+n_ic <- sum(dat$group == "IC")
+labs <- c("ED" = paste0("ED (", n_ed, " visits)"),
+          "IC" = paste0("IC (", n_ic, " visits)"))
+cap_w = 0.18
+
+
+# whisker endpoints per group 
+w <- dat %>%
+    filter(!is.na(time_to_firstdose_mins)) %>%
+    mutate(group = factor(group, levels = c("ED","IC"))) %>%
+    group_by(group) %>%
+    summarise(
+        y_low  = boxplot.stats(time_to_firstdose_mins)$stats[1],
+        y_high = boxplot.stats(time_to_firstdose_mins)$stats[5],
+        .groups = "drop"
+    )
+
+ggplot(dat, aes(x = group, y = time_to_firstdose_mins)) +
+    geom_boxplot(fill = "#8EC5FF", color = "#2F80ED", outlier.colour = "#2F80ED") +
+    geom_segment(data = w,
+                 aes(x = as.numeric(group) - cap_w, xend = as.numeric(group) + cap_w,
+                     y = y_low, yend = y_low),
+                 inherit.aes = FALSE, color = "#2F80ED", linewidth = 0.4) +
+    geom_segment(data = w,
+                 aes(x = as.numeric(group) - cap_w, xend = as.numeric(group) + cap_w,
+                     y = y_high, yend = y_high),
+                 inherit.aes = FALSE, color = "#2F80ED", linewidth = 0.4) +
+    scale_x_discrete(labels = labs) +
+    labs(x = NULL, y = "Time to first dose (min)") +
+    coord_cartesian(ylim = c(0, 520)) +
+    theme_classic()
+
+#Odds ratio and counts
+df_ic1.1 <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/df_ic1.1.csv") %>% select(-X)
+df_ed2.1 <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/df_ed2.1.csv") %>% select(-X)
+
+
+nrow(df_ic1.1)
+nrow(df_ed2.1)
+table(df_ic1.1$discharge, useNA = "ifany")
+table(df_ed2.1$discharge, useNA = "ifany")
+
+df_ic1.1$hospital_admission <- if_else(df_ic1.1$discharge %in% c("Direct hospital admission", "ED for hospital admission"), 1L, 0L)
+df_ed2.1$hospital_admission <- if_else(df_ed2.1$discharge == "Hospital admission", 1L, 0L)
+
+
+df_ic1.1 <- df_ic1.1 %>% 
+  mutate(group = "IC")
+
+df_ed2.1 <- df_ed2.1 %>% 
+  mutate(group = "ED")
+
+df_combined1.1 <- bind_rows(select(df_ic1.1, all_of(c("patient_id", "hospital_admission", "group", "site_id"))), 
+                         select(df_ed2.1, all_of(c("patient_id", "hospital_admission", "group", "site_id"))))
+
+sum(!is.na(df_combined1.1[df_combined1.1$group == "IC",]$hospital_admission))
+sum(!is.na(df_combined1.1[df_combined1.1$group == "ED",]$hospital_admission))
+
+length(unique(df_combined1.1$patient_id[df_combined1.1$group == "IC" & !is.na(df_combined1.1$hospital_admission)]))
+length(unique(df_combined1.1$patient_id[df_combined1.1$group == "ED" & !is.na(df_combined1.1$hospital_admission)]))
+
+table(df_ic1.1$hospital_admission, useNA = "ifany")
+table(df_ed2.1$hospital_admission, useNA = "ifany")
+table(df_ic1.1$hospital_admission, useNA = "ifany")/nrow(df_ic1.1)
+table(df_ed2.1$hospital_admission, useNA = "ifany")/nrow(df_ed2.1)
+
+df_combined1.1$group <- relevel(factor(df_combined1.1$group), ref = "IC")
+fit_LR <- glmer(hospital_admission ~ group + (1|patient_id), family = binomial, data = df_combined1.1)
+summary(fit_LR)$coefficients
+
+coef_tab <- summary(fit_LR)$coefficients
+coef_tab
+exp(coef_tab[, "Estimate"])
+
+##Figure2
+df_p <- df_combined1.1 %>% 
+  mutate(group = factor(group, levels = c("ED","IC"))) %>%
+  summarise(
+    n_visits = sum(!is.na(hospital_admission)),
+    p_admit  = mean(hospital_admission == 1, na.rm = TRUE),
+    .by = group
+  ) %>%
+  mutate(
+    x_lab = paste0(group, " (", n_visits, " visits)"),
+    pct_lab = sprintf("%.1f", 100 * p_admit)
+  )
+
+ggplot(df_p, aes(x = x_lab, y = 100 * p_admit)) +
+  geom_col(fill = "#8EC5FF", color = "#2F80ED", width = 0.6) +
+  geom_text(aes(label = pct_lab), vjust = -0.4, size = 4) +
+  scale_y_continuous(
+    name = "Hospital admission (%)",
+    limits = c(0, max(100 * df_p$p_admit) * 1.08),
+    expand = c(0, 0)   # no gap at 0%
+  ) +
+  labs(x = NULL) +
+  theme_classic()
+
+# site-level admission rate (visit-level) within each group
+ed_site <- df_ed2.1 %>%
+  filter(!is.na(hospital_admission), !is.na(site_id)) %>%
+  group_by(site_id) %>%
+  summarise(n_visits = n(),
+            admit_rate = mean(hospital_admission == 1),
+            .groups = "drop") %>%
+  mutate(group = "ED")
+
+ic_site <- df_ic1.1 %>%
+  filter(!is.na(hospital_admission), !is.na(site_id)) %>%
+  group_by(site_id) %>%
+  summarise(n_visits = n(),
+            admit_rate = mean(hospital_admission == 1),
+            .groups = "drop") %>%
+  mutate(group = "IC")
+
+site_rates <- bind_rows(ed_site, ic_site)
+
+# smallest and largest site within each group
+extremes <- site_rates %>%
+  group_by(group) %>%
+  slice_min(admit_rate, n = 1, with_ties = FALSE) %>%
+  bind_rows(
+    site_rates %>%
+      group_by(group) %>%
+      slice_max(admit_rate, n = 1, with_ties = FALSE)
+  ) %>%
+  arrange(group, admit_rate)
+
+extremes
+
+#Waittimes at IC and ED
+df_ic3 <- read.csv("\\\\win.ad.jhu.edu/Users$/HOME/SCD/df_ic3.csv")
+
+df_ic3$discharge_datetime <- as.POSIXct(df_ic3$discharge_datetime, format = fmt, tz = tz)
+df_ic3$checkin_datetime   <- as.POSIXct(df_ic3$checkin_datetime,   format = fmt, tz = tz)
+
+df_ic3$duration_visit <- as.numeric(difftime(df_ic3$discharge_datetime,
+                                               df_ic3$checkin_datetime,
+                                               units = "mins"))
+df_ic3 <- df_ic3 %>% 
+  filter(duration_visit > 0)
+
+```
+

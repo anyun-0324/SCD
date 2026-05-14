@@ -304,6 +304,15 @@ df_ic <- df_ic %>%
       !if_all(all_of(useful_cols), ~ is.na(.))
   )
 
+##0513 add: confirmed with Cait that site j is VCU as well.
+df_ic <- df_ic %>% 
+  mutate(site_id = case_when(site_id == "VCU SITEI" ~ "vcu sitei",
+                             TRUE ~ site_id),
+         site_id = case_when(substr(patient_id, 1,5) == "sitea" ~ "boston medical center sitea",
+                             substr(patient_id, 1,5) == "sitej" ~ "vcu sitei",
+                             TRUE ~ site_id))
+
+
 consort_table <- rbind(consort_table, 
                        data.frame(step = "Removing noninformative entries",
                                   included = nrow(df_ic),
@@ -326,11 +335,15 @@ summary(df_ic[,minimally_useful])
 ##Implausible date values
 datetime <- c("checkin_datetime","firstmedadmin_datetime","lastmedadmin_datetime","discharge_datetime")
 
-df_ic1 <- df_ic %>% 
-  filter(!if_any(all_of(datetime), ~ !is.na(.) & . < as.POSIXct("2023-04-01 00:00:00", tz = "UTC")))
+#Study duration
+start <- as.POSIXct("2023-04-01 00:00:00", tz = "UTC")
+end   <- as.POSIXct("2025-05-31 00:00:00", tz = "UTC")
+
+df_ic1 <- df_ic %>%
+  filter(if_any(all_of(datetime), ~ is.na(.) | (. >= start & . <= end)))
 
 consort_table <- rbind(consort_table, 
-                       data.frame(step = "df_ic1: After 04/23",
+                       data.frame(step = "df_ic1: After 04/23 and before 05/25",
                                   included = nrow(df_ic1),
                                   excluded = consort_table$included[2] - nrow(df_ic1)
                                   ))
@@ -664,10 +677,17 @@ df_ed <- df_ed %>%
       !if_all(all_of(useful_cols), ~ is.na(.))
   )
 
+##0513 add: confirmed with Cait that site j is VCU as well.
+df_ed <- df_ed %>% 
+  mutate(site_id = case_when(site_id %in% c("vcu", "vcu: virginia commonwealth university sitej") ~ "vcu sitei",
+                             TRUE ~ site_id),
+         site_id = case_when(substr(patient_id, 1,5) == "sitea" ~ "boston medical center sitea",
+                             TRUE ~ site_id))
+
 consort_table_ed <- rbind(consort_table_ed, 
                        data.frame(step = "Removing noninformative entries",
                                   included = nrow(df_ed),
-                                  excluded = consort_table$included[1] - nrow(df_ed)
+                                  excluded = consort_table_ed$included[1] - nrow(df_ed)
                                   ))
 
 ##Extreme values
@@ -676,30 +696,61 @@ summary(df_ed[,useful_cols])
 ##Implausible date values
 datetime <- c("checkin_datetime","firstmedadmin_datetime","lastmedadmin_datetime","discharge_datetime")
 
-df_ed1 <- df_ed %>% 
-  filter(!if_any(all_of(datetime), ~ !is.na(.) & . < as.POSIXct("2023-04-01 00:00:00", tz = "UTC")))
+#Study duration
+start <- as.POSIXct("2023-04-01 00:00:00", tz = "UTC")
+end   <- as.POSIXct("2025-05-31 00:00:00", tz = "UTC")
+
+df_ed1 <- df_ed %>%
+  filter(if_any(all_of(datetime), ~ is.na(.) | (. >= start & . <= end)))
 
 consort_table_ed <- rbind(consort_table_ed, 
-                       data.frame(step = "df_ed1: After 04/23",
+                       data.frame(step = "df_ed1: After 04/23 and before 05/25",
                                   included = nrow(df_ed1),
                                   excluded = consort_table_ed$included[2] - nrow(df_ed1)
                                   ))
 
+#set.seed(123)
+vcu_ids <- c("vcu sitei")
+
+##2 random dates per ISO week, then keep rows on those dates
+df_ed_vcu_sampled <- df_ed1 %>%
+  filter(site_id %in% vcu_ids) %>%
+  mutate(
+    year = year(checkin_datetime),
+    week = isoweek(checkin_datetime),
+    date_only = as.Date(checkin_datetime)
+  ) %>%
+  group_by(year, week) %>%
+  filter(date_only %in% sample(unique(date_only), size = min(2, n_distinct(date_only)))) %>%
+  ungroup() 
+
+#Joining with all other sites
+df_ed2 <- df_ed1 %>% 
+  filter(!site_id %in% vcu_ids) %>% 
+  bind_rows(df_ed_vcu_sampled)
+
+consort_table_ed <- rbind(consort_table_ed, 
+                       data.frame(step = "df_ed2: select patients with ED visits on 2 random dates for every week and exclude remaining for VCU and join with all other sites",
+                                  included = nrow(df_ed2),
+                                  excluded = consort_table_ed$included[3] - nrow(df_ed2)
+                                  ))
+
 #Check firstmed after checkin date time AND and multiple visits in a day
-df_ed2 <- df_ed1 %>%
+df_ed3 <- df_ed2 %>%
   mutate(
     implausible_time_order_timetofirstmed =
       !is.na(checkin_datetime) & !is.na(firstmedadmin_datetime) &
       !(checkin_datetime <= firstmedadmin_datetime)
   )
-sum(df_ed2$implausible_time_order_timetofirstmed, na.rm = TRUE)
+sum(df_ed3$implausible_time_order_timetofirstmed, na.rm = TRUE)
 
-df_ed2 <- df_ed2 %>% 
+
+df_ed3 <- df_ed3 %>% 
   filter(!implausible_time_order_timetofirstmed)
 
-nrow(df_ed2)
+nrow(df_ed3)
 
-df_ed2 <- df_ed2 %>%
+df_ed3 <- df_ed3 %>%
   mutate(checkin_date = as.Date(checkin_datetime)) %>%
   arrange(patient_id, checkin_date, checkin_datetime) %>%
   group_by(patient_id, checkin_date) %>%
@@ -707,16 +758,16 @@ df_ed2 <- df_ed2 %>%
   ungroup() %>%
   select(-checkin_date)
 
-nrow(df_ed2)
+nrow(df_ed3)
 
 consort_table_ed <- rbind(consort_table_ed, 
-                       data.frame(step = "df_ed2: firstmed after checkin date time and ONE visit per day per patient",
-                                  included = nrow(df_ed2),
-                                  excluded = consort_table_ed$included[3] - nrow(df_ed2)
+                       data.frame(step = "df_ed3: firstmed after checkin date time and ONE visit per day per patient",
+                                  included = nrow(df_ed3),
+                                  excluded = consort_table_ed$included[4] - nrow(df_ed3)
                                   ))
 
 #Check impossible date values (e.g., discharge before med given)
-df_ed3 <- df_ed2 %>%
+df_ed4 <- df_ed3 %>%
   mutate(
     implausible_time_order_full =
       !is.na(checkin_datetime) & !is.na(firstmedadmin_datetime) &
@@ -725,10 +776,13 @@ df_ed3 <- df_ed2 %>%
           firstmedadmin_datetime <= lastmedadmin_datetime &
           lastmedadmin_datetime <= discharge_datetime)
   )
-sum(df_ed3$implausible_time_order_full, na.rm = TRUE)
+sum(df_ed4$implausible_time_order_full, na.rm = TRUE)
+
+df_ed4[df_ed4$implausible_time_order_full == T, datetime] %>% head(n=40)
+
 
 #Below code does this: Fix date entry errors: if exactly 3 dates share the same date and 1 differs, correct the odd one to match (keeps original time)
-df_ed3 <- df_ed3 %>%
+df_ed4 <- df_ed4 %>%
   rowwise() %>%
   mutate(
     # extract dates only (ignore time)
@@ -790,7 +844,7 @@ df_ed3 <- df_ed3 %>%
   ungroup()
 
 # recheck
-df_ed3 <- df_ed3 %>%
+df_ed4 <- df_ed4 %>%
   mutate(
     implausible_time_order_full =
       !is.na(checkin_datetime) & !is.na(firstmedadmin_datetime) &
@@ -799,24 +853,24 @@ df_ed3 <- df_ed3 %>%
           firstmedadmin_datetime <= lastmedadmin_datetime &
           lastmedadmin_datetime <= discharge_datetime)
   )
-sum(df_ed3$implausible_time_order_full, na.rm = TRUE)
+sum(df_ed4$implausible_time_order_full, na.rm = TRUE)
 
 #quick count
-df_ed3 %>% summarise(n_implausible = sum(implausible_time_order_full, na.rm = TRUE),
+df_ed4 %>% summarise(n_implausible = sum(implausible_time_order_full, na.rm = TRUE),
                     pct_implausible = 100 * mean(implausible_time_order_full, na.rm = TRUE))
 
-df_ed3 <- df_ed3 %>% 
+df_ed4 <- df_ed4 %>% 
   filter(!implausible_time_order_full)
 
 consort_table_ed <- rbind(consort_table_ed, 
-                       data.frame(step = "df_ed3: removing ALL impossible date values with order problems (e.g., discharge before med given)",
-                                  included = nrow(df_ed3),
-                                  excluded = consort_table_ed$included[4] - nrow(df_ed3)
+                       data.frame(step = "df_ed4: removing ALL impossible date values with order problems (e.g., discharge before med given)",
+                                  included = nrow(df_ed4),
+                                  excluded = consort_table_ed$included[5] - nrow(df_ed4)
                                   ))
 
 ##filtering Disposition
-table(df_ed1$disposition)
-df_ed1 <- df_ed1 %>%
+table(df_ed2$disposition)
+df_ed2 <- df_ed2 %>%
   mutate(discharge = dplyr::recode(disposition,
                                     `1`  = "Home",
                                     `2`  = "Hospital admission",
@@ -824,19 +878,36 @@ df_ed1 <- df_ed1 %>%
                                     `88` = "Other",
                                     .default = NA_character_))
 
-table(df_ed1$discharge, useNA = "ifany")
+table(df_ed2$discharge, useNA = "ifany")
 
-df_ed1.1 <- df_ed1 %>% 
+df_ed2.1 <- df_ed2 %>% 
   filter(!is.na(disposition))
 
 consort_table_ed <- rbind(consort_table_ed, 
-                       data.frame(step = "df_ed1.1: Remove those with no disposition info",
-                                  included = nrow(df_ed1.1),
-                                  excluded = nrow(df_ed1) - nrow(df_ed1.1)
+                       data.frame(step = "df_ed2.1: Remove those with no disposition info",
+                                  included = nrow(df_ed2.1),
+                                  excluded = nrow(df_ed2) - nrow(df_ed2.1)
                                   ))
 
-## Random sampling VCU data 
-set.seed(123)
+```
+
+# Data exporting
+```{r}
+#uncomment to export
+'write.csv(df_ic, "df_ic.csv")
+write.csv(df_ic1, "df_ic1.csv")
+write.csv(df_ic2, "df_ic2.csv")
+write.csv(df_ic3, "df_ic3.csv")
+write.csv(df_ic1.1, "df_ic1.1.csv")
+write.csv(consort_table, "consort_table.csv")
+
+write.csv(df_ed, "df_ed.csv")
+write.csv(df_ed1, "df_ed1.csv")
+write.csv(df_ed2, "df_ed2.csv")
+write.csv(df_ed3, "df_ed3.csv")
+write.csv(df_ed4, "df_ed1.1.csv")
+write.csv(df_ed2.1, "df_ed2.1.csv")
+write.csv(consort_table_ed, "consort_table_ed1.csv")'
 
 ```
 
